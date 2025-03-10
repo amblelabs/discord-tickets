@@ -10,6 +10,7 @@ API_URL = "https://api.github.com"
 OWNER = os.getenv('GITHUB_OWNER')
 REPO = os.getenv('GITHUB_REPO')
 
+
 def get_issues(owner: str, repo: str, page: int = 1) -> list:
     '''
     Get a list of issues from a GitHub repository.
@@ -58,7 +59,7 @@ def get_issue_url(data: dict) -> str:
 
     return data.get("html_url", "")
 
-def create_issue(owner: str, repo: str, title: str, body: str = "", assignees: list = [], labels: list = []) -> dict:
+def create_issue(owner: str, repo: str, title: str, body: str = "", assignees: list[str] = [], labels: list[str] = []) -> dict:
     '''
     Create an issue in a GitHub repository.
     '''
