@@ -83,3 +83,41 @@ def create_issue(owner: str, repo: str, title: str, body: str = "", assignees: l
     else:
         print(f"Failed to create issue: {response.status_code}")
         return {}
+    
+def close_issue(owner: str, repo: str, issue_number: int) -> None:
+    '''
+    Close an issue in a GitHub repository.
+    '''
+
+    url = f"{API_URL}/repos/{owner}/{repo}/issues/{issue_number}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    data = {
+        "state": "closed"
+    }
+
+    response = requests.patch(url, headers=headers, json=data)
+    if response.status_code != 200:
+        print(f"Failed to close issue: {response.status_code}")
+
+def send_comment(owner: str, repo: str, issue_number: int, body: str) -> None:
+    '''
+    Send a comment to an issue in a GitHub repository.
+    '''
+
+    url = f"{API_URL}/repos/{owner}/{repo}/issues/{issue_number}/comments"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    data = {
+        "body": body
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code != 201:
+        print(f"Failed to send comment: {response.status_code}")

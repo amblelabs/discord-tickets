@@ -1,7 +1,9 @@
 import discord
 import os # default module
 import github_issues as issues
+import tracking
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv() # load all the variables from the env file
 bot = discord.Bot()
@@ -71,6 +73,54 @@ class IssueModal(discord.ui.Modal):
 async def on_ready():
     print(f"{bot.user} is ready!")
 
+    # async def validate_data():
+    #     while True:
+    #         print("Validating data...")
+    #         await tracking.validate_all(issues.OWNER, issues.REPO)
+    #         await asyncio.sleep(60)  # Wait for 1 minute
+
+    # bot.loop.create_task(validate_data())
+
+@bot.event
+async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
+    # Check if thread is archived, if so close the issue and stop tracking it
+    forum = await get_forum()
+    thread = None
+
+    async for archived in forum.archived_threads():
+        if (archived.id == payload.thread_id):
+            thread = archived
+            break
+
+    if (thread): # must be archived then
+        issue = tracking.get_issue(thread.id)
+        if (issue):
+            issues.close_issue(issues.OWNER, issues.REPO, issue.get("issue_number"))
+            tracking.untrack_issue(issues.OWNER, issues.REPO, issue.get("issue_number"))
+            print("Untracked & Closed issue", issue.get("issue_number"))
+            await thread.send("Issue closed, will no longer be tracked (permanently).")
+            await thread.edit(locked=True, archived=True)
+
+# TODO - Implement the on_message event, not sure if i liked it so i commented it out
+# @bot.event
+# async def on_message(message: discord.Message):
+#     if (message.author == bot.user):
+#         return
+
+#     # Check if the message is in a thread
+#     if isinstance(message.channel, discord.Thread):
+#         issue = tracking.get_issue(message.channel.id)
+#         if (issue):
+#             body = f"# From Discord \n\n **{message.author.name}** says \"{message.content}\""
+
+#             issues.send_comment(issues.OWNER, issues.REPO, issue.get("issue_number"), body)
+#             print("Sent comment to issue", issue.get("issue_number"), body)
+
+#             # Validate the issue
+#             if (await tracking.validate(issue) == False):
+#                 await message.channel.send("Issue has been closed, will no longer be tracked.")
+#                 await message.channel.edit(locked=True, archived=True)
+
 async def get_forum_id() -> int:
     '''
         Returns the id of the forum this bot operates in
@@ -92,6 +142,17 @@ async def get_forum_id() -> int:
     FORUM_ID = forum.id
     return FORUM_ID
 
+async def get_forum() -> discord.ForumChannel:
+    '''
+        Returns the forum this bot operates in
+        Throws an exception if the forum/guild is not found
+    '''
+
+    global FORUM_ID
+    if (FORUM_ID == -1):
+        await get_forum_id()
+    return bot.get_channel(FORUM_ID)
+
 async def create_issue(title: str, body: str, label: list[str] = [], blame: str = None) -> tuple[dict, discord.Thread]:
     '''
         Create an issue in the GitHub repository and the Discord forum
@@ -101,7 +162,7 @@ async def create_issue(title: str, body: str, label: list[str] = [], blame: str 
     if (FORUM_ID == -1):
         await get_forum_id()
 
-    body += f"\n\nCreated By: `{blame}`" if blame else ""
+    body += f"\n\n# Created By: `{blame}`" if blame else ""
 
     # Create the issue
     created = issues.create_issue(issues.OWNER, issues.REPO, title, body, labels=label)
@@ -110,6 +171,9 @@ async def create_issue(title: str, body: str, label: list[str] = [], blame: str 
     forum = bot.get_channel(FORUM_ID)
     thread = await forum.create_thread(name=title, content=f"{body}\n\n[Created Issue]({issues.get_issue_url(created)})", applied_tags=get_tags(forum, label))
     
+    # start tracking
+    tracking.track_issue(issues.OWNER, issues.REPO, created.get("number"), thread.id)
+
     return created, thread
 
 def get_tags(forum: discord.ForumChannel, tags: list[str]) -> list[discord.ForumTag]:
@@ -130,5 +194,59 @@ async def create(ctx : discord.context.ApplicationContext):
     '''
     modal = IssueModal(title="Create an Issue", ctx=ctx)
     await ctx.send_modal(modal)
+
+@issues_group.command(guild_ids=[GUILD_ID])
+async def comment(ctx: discord.context.ApplicationContext, message: str, issue_number: int = None):
+    '''
+        Comment on an issue
+    '''
+    if (issue_number == None):
+        # Get the issue number from the thread
+        issue = tracking.get_issue(ctx.channel.id)
+        if (issue):
+            issue_number = issue.get("issue_number")
+        else:
+            await ctx.respond("This is not a tracked issue.", ephemeral=True)
+            return
+    
+    await ctx.defer()
+
+    body = f"# From Discord \n\n **{ctx.author.name}** says \"{message}\""
+    issues.send_comment(issues.OWNER, issues.REPO, issue_number, body)
+    await ctx.followup.send(f"New Comment:\n **{ctx.author.name}** says \"{message}\"")
+    print("Sent comment to issue", issue_number, ctx.author.name, message)
+
+# @issues_group.command(guild_ids=[GUILD_ID])
+# @discord.commands.default_permissions(manage_channels=True)
+# async def close(ctx: discord.context.ApplicationContext, issue_number: int = None):
+#     '''
+#         Close an issue
+#     '''
+
+#     await ctx.defer()
+
+#     if (issue_number == None):
+#         # Get the issue number from the thread
+#         issue = tracking.get_issue(ctx.channel.id)
+#         if (issue):
+#             issue_number = issue.get("issue_number")
+#         else:
+#             await ctx.send_followup("This is not a tracked issue.", ephemeral=True)
+#             return
+        
+
+#     thread_id = tracking.get_thread_id(issues.OWNER, issues.REPO, issue_number)
+#     thread = bot.get_channel(thread_id)
+
+#     if (thread):
+#         await thread.send("Issue closed, will no longer be tracked.")
+#         await thread.edit(locked=True, archived=True)
+    
+#     issues.close_issue(issues.OWNER, issues.REPO, issue_number)
+#     tracking.untrack_issue(issues.OWNER, issues.REPO, issue_number)
+
+#     issues.send_comment(issues.OWNER, issues.REPO, issue_number, f"Issue closed by {ctx.author.name} from Discord.")
+#     print("Untracked & Closed issue", issue_number)
+#     await ctx.send_followup("Issue closed!")
 
 bot.run(os.getenv('DISCORD_TOKEN')) # run the bot with the token
