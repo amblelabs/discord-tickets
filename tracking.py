@@ -2,6 +2,7 @@ from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 import github_issues as issues
 import os 
+import discord
 from dotenv import load_dotenv
 
 load_dotenv()

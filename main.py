@@ -2,8 +2,9 @@ import discord
 import os # default module
 import github_issues as issues
 import tracking
-from dotenv import load_dotenv
+import notification as notifier
 import asyncio
+from dotenv import load_dotenv
 
 load_dotenv() # load all the variables from the env file
 bot = discord.Bot()
@@ -81,6 +82,21 @@ async def on_ready():
 
     # bot.loop.create_task(validate_data())
 
+    async def send_reminders():
+        while True:
+            print("Sending reminders...")
+            await notifier.remind_all_issues(bot, issues.OWNER, issues.REPO)
+            await asyncio.sleep(300)
+
+    async def update_issues():
+        while True:
+            print("Updating issues...")
+            await track_all_issues()
+            await asyncio.sleep(300)
+
+    bot.loop.create_task(update_issues())
+    bot.loop.create_task(send_reminders())
+
 @bot.event
 async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
     # Check if thread is archived, if so close the issue and stop tracking it
@@ -100,6 +116,27 @@ async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
             print("Untracked & Closed issue", issue.get("issue_number"))
             await thread.send("Issue closed, will no longer be tracked (permanently).")
             await thread.edit(locked=True, archived=True)
+
+async def track_all_issues():
+    '''
+        Track all the issues in the GitHub repository
+    '''
+
+    gh_issues = issues.get_issues(issues.OWNER, issues.REPO)
+    print(gh_issues)
+    for issue in gh_issues:
+        # Check if the issue is already being tracked
+        if (tracking.get_thread_id(issues.OWNER, issues.REPO, issue.get("number")) != -1):
+            continue
+
+        body = (issue.get("body") or "No Description") + f"\n\n# Created By: `{issue.get('user').get('login')}`"
+        # ensure < 2000 characters
+        if (len(body) > 2000):
+            body = body[:2000]
+
+        forum : discord.ForumChannel = await get_forum()
+        thread : discord.Thread = await forum.create_thread(name=issue.get("title"), content=body)
+        tracking.track_issue(issues.OWNER, issues.REPO, issue.get("number"), thread.id)
 
 # TODO - Implement the on_message event, not sure if i liked it so i commented it out
 # @bot.event
