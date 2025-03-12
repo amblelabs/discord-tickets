@@ -1,3 +1,5 @@
+import typing
+
 from dotenv import load_dotenv
 load_dotenv() # load all the variables from the env file
 
@@ -10,19 +12,21 @@ import asyncio
 
 bot = discord.Bot()
 
+forum: typing.Optional[discord.ForumChannel] = None
+webhook: typing.Optional[discord.Webhook] = None
+
 GUILD_ID = os.getenv("GUILD_ID")
-FORUM_ID = -1
 
 issues_group = bot.create_group("issues", "Manage Github issues")
 
 class IssueView(discord.ui.View):
     def __init__(self, title: str, body: str, ctx : discord.context.ApplicationContext) -> None:
         super().__init__(timeout=10)
+
         self.title = title
         self.body = body
         self.disabled = False
         self.ctx = ctx
-
 
     @discord.ui.select( # the decorator that lets you specify the properties of the select menu
         placeholder = "Issue Type", # the placeholder text that will be displayed if nothing is selected
@@ -75,6 +79,8 @@ class IssueModal(discord.ui.Modal):
 async def on_ready():
     print(f"{bot.user} is ready!")
 
+    await setup_forum()
+
     async def send_reminders():
         while True:
             print("Sending reminders...")
@@ -93,7 +99,6 @@ async def on_ready():
 @bot.event
 async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
     # Check if thread is archived, if so close the issue and stop tracking it
-    forum = await get_forum()
     thread = None
 
     async for archived in forum.archived_threads():
@@ -117,22 +122,28 @@ async def track_all_issues():
     """
 
     gh_issues = issues.get_issues(issues.OWNER, issues.REPO)
-    print(gh_issues)
+
     for issue in gh_issues:
         # Check if the issue is already being tracked
         if tracking.get_thread_id(issues.OWNER, issues.REPO, issue.get("number")) != -1:
             continue
 
-        login = issue.get("user").get("login")
-        body = (issue.get("body") or "No Description") + f"\n\n# Created By: `{login}`"
+        user = issue.get("user")
+        login = user.get("login")
+        avatar = user.get("avatar_url")
+
+        body = issue.get("body") or "No Description"
 
         # ensure < 2000 characters
         if len(body) > 2000:
             body = body[:2000]
 
-        forum : discord.ForumChannel = await get_forum()
-        thread : discord.Thread = await forum.create_thread(name=issue.get("title"), content=body)
+        label = issue.get("labls").get("name")
+
+        thread: discord.Thread = await forum.create_thread(name=issue.get("title"), content="# Created By: `{login}`", applied_tags=get_tags(forum, label))
         tracking.track_issue(issues.OWNER, issues.REPO, issue.get("number"), thread.id)
+
+        await webhook.send(content=body, username=login, avatar_url=avatar)
 
 # TODO - Implement the on_message event, not sure if i liked it so i commented it out
 # @bot.event
@@ -154,46 +165,6 @@ async def track_all_issues():
 #                 await message.channel.send("Issue has been closed, will no longer be tracked.")
 #                 await message.channel.edit(locked=True, archived=True)
 
-async def get_forum_id() -> int:
-    """
-        Returns the id of the forum this bot operates in
-        Throws an exception if the forum/guild is not found
-    """
-
-    # Attempt to find the forum
-    global FORUM_ID
-    guild = bot.get_guild(int(GUILD_ID))
-
-    if guild is None:
-        raise Exception("Guild not found")
-
-    for channel in guild.forum_channels:
-        if channel.name == "github-issues":
-            FORUM_ID = channel.id
-            return FORUM_ID
-    
-    # Try to create the forum
-    forum = await guild.create_forum_channel("github-issues")
-    FORUM_ID = forum.id
-    return FORUM_ID
-
-async def get_forum() -> discord.ForumChannel:
-    """
-        Returns the forum this bot operates in
-        Throws an exception if the forum/guild is not found
-    """
-
-    global FORUM_ID
-    if FORUM_ID == -1:
-        await get_forum_id()
-
-    channel = bot.get_channel(FORUM_ID)
-
-    if channel is None or channel is not discord.ForumChannel:
-        raise Exception("FORUM_ID should point to a forum channel!")
-
-    return channel
-
 async def create_issue(title: str, body: str, label: list[str] = [], blame: str = None) -> tuple[dict, discord.Thread]:
     """
         Create an issue in the GitHub repository and the Discord forum
@@ -204,7 +175,6 @@ async def create_issue(title: str, body: str, label: list[str] = [], blame: str 
     created = issues.create_issue(issues.OWNER, issues.REPO, title, body, labels=label)
 
     # Create the forum message
-    forum = await get_forum()
     thread = await forum.create_thread(name=title, content=f"{body}\n\n[Created Issue]({issues.get_issue_url(created)})", applied_tags=get_tags(forum, label))
     
     # start tracking
@@ -212,11 +182,6 @@ async def create_issue(title: str, body: str, label: list[str] = [], blame: str 
 
     return created, thread
 
-def get_tags(forum: discord.ForumChannel, tags: list[str]) -> list[discord.ForumTag]:
-    """
-        Get a tag from a forum channel
-    """
-    return [t for t in forum.available_tags if t.name in tags]
 
 @issues_group.command(guild_ids=[GUILD_ID])
 async def create(ctx : discord.context.ApplicationContext):
@@ -225,6 +190,7 @@ async def create(ctx : discord.context.ApplicationContext):
     """
     modal = IssueModal(title="Create an Issue", ctx=ctx)
     await ctx.send_modal(modal)
+
 
 @issues_group.command(guild_ids=[GUILD_ID])
 async def comment(ctx: discord.context.ApplicationContext, message: str, issue_number: int = None):
@@ -248,6 +214,7 @@ async def comment(ctx: discord.context.ApplicationContext, message: str, issue_n
     await ctx.followup.send(f"New Comment:\n **{ctx.author.name}** says \"{message}\"")
     print("Sent comment to issue", issue_number, ctx.author.name, message)
 
+
 # @issues_group.command(guild_ids=[GUILD_ID])
 # @discord.commands.default_permissions(manage_channels=True)
 # async def close(ctx: discord.context.ApplicationContext, issue_number: int = None):
@@ -265,7 +232,7 @@ async def comment(ctx: discord.context.ApplicationContext, message: str, issue_n
 #         else:
 #             await ctx.send_followup("This is not a tracked issue.", ephemeral=True)
 #             return
-        
+
 
 #     thread_id = tracking.get_thread_id(issues.OWNER, issues.REPO, issue_number)
 #     thread = bot.get_channel(thread_id)
@@ -273,12 +240,56 @@ async def comment(ctx: discord.context.ApplicationContext, message: str, issue_n
 #     if (thread):
 #         await thread.send("Issue closed, will no longer be tracked.")
 #         await thread.edit(locked=True, archived=True)
-    
+
 #     issues.close_issue(issues.OWNER, issues.REPO, issue_number)
 #     tracking.untrack_issue(issues.OWNER, issues.REPO, issue_number)
 
 #     issues.send_comment(issues.OWNER, issues.REPO, issue_number, f"Issue closed by {ctx.author.name} from Discord.")
 #     print("Untracked & Closed issue", issue_number)
 #     await ctx.send_followup("Issue closed!")
+
+
+def get_tags(forum: discord.ForumChannel, tags: list[str]) -> list[discord.ForumTag]:
+    """
+        Get a tag from a forum channel
+    """
+    return [t for t in forum.available_tags if t.name in tags]
+
+
+async def setup_forum():
+    """
+        Returns the id of the forum this bot operates in
+        Throws an exception if the forum/guild is not found
+    """
+
+    # Attempt to find the forum
+    channel = None
+    guild = bot.get_guild(int(GUILD_ID))
+
+    if not guild:
+        raise Exception("Guild not found")
+
+    for c in guild.forum_channels:
+        if c.name == "github-issues":
+            channel = c
+            break
+
+    # Try to create the forum
+    if not channel:
+        channel = await guild.create_forum_channel("github-issues")
+
+    if not channel or not isinstance(channel, discord.ForumChannel):
+        raise Exception("FORUM_ID should point to a forum channel!")
+
+    global forum
+    forum = channel
+
+    global webhook
+    webhooks = await forum.webhooks()
+
+    if not webhooks:
+        webhook = await forum.create_webhook(name="Github Issues")
+    else:
+        webhook = (await forum.webhooks())[-1]
 
 bot.run(os.getenv("DISCORD_TOKEN")) # run the bot with the token
