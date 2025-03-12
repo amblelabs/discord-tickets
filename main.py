@@ -1,15 +1,16 @@
+from dotenv import load_dotenv
+load_dotenv() # load all the variables from the env file
+
 import discord
 import os # default module
 import github_issues as issues
 import tracking
 import notification as notifier
 import asyncio
-from dotenv import load_dotenv
 
-load_dotenv() # load all the variables from the env file
 bot = discord.Bot()
 
-GUILD_ID = os.getenv('GUILD_ID')
+GUILD_ID = os.getenv("GUILD_ID")
 FORUM_ID = -1
 
 issues_group = bot.create_group("issues", "Manage Github issues")
@@ -39,7 +40,7 @@ class IssueView(discord.ui.View):
         ]
     )
     async def select_callback(self, select, interaction: discord.Interaction):
-        if (self.disabled):
+        if self.disabled:
             return
 
         label = select.values[0].lower()
@@ -74,14 +75,6 @@ class IssueModal(discord.ui.Modal):
 async def on_ready():
     print(f"{bot.user} is ready!")
 
-    # async def validate_data():
-    #     while True:
-    #         print("Validating data...")
-    #         await tracking.validate_all(issues.OWNER, issues.REPO)
-    #         await asyncio.sleep(60)  # Wait for 1 minute
-
-    # bot.loop.create_task(validate_data())
-
     async def send_reminders():
         while True:
             print("Sending reminders...")
@@ -104,13 +97,14 @@ async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
     thread = None
 
     async for archived in forum.archived_threads():
-        if (archived.id == payload.thread_id):
+        if archived.id == payload.thread_id:
             thread = archived
             break
 
-    if (thread): # must be archived then
+    if thread: # must be archived then
         issue = tracking.get_issue(thread.id)
-        if (issue):
+
+        if issue:
             issues.close_issue(issues.OWNER, issues.REPO, issue.get("issue_number"))
             tracking.untrack_issue(issues.OWNER, issues.REPO, issue.get("issue_number"))
             print("Untracked & Closed issue", issue.get("issue_number"))
@@ -118,20 +112,22 @@ async def on_raw_thread_update(payload: discord.RawThreadUpdateEvent):
             await thread.edit(locked=True, archived=True)
 
 async def track_all_issues():
-    '''
+    """
         Track all the issues in the GitHub repository
-    '''
+    """
 
     gh_issues = issues.get_issues(issues.OWNER, issues.REPO)
     print(gh_issues)
     for issue in gh_issues:
         # Check if the issue is already being tracked
-        if (tracking.get_thread_id(issues.OWNER, issues.REPO, issue.get("number")) != -1):
+        if tracking.get_thread_id(issues.OWNER, issues.REPO, issue.get("number")) != -1:
             continue
 
-        body = (issue.get("body") or "No Description") + f"\n\n# Created By: `{issue.get('user').get('login')}`"
+        login = issue.get("user").get("login")
+        body = (issue.get("body") or "No Description") + f"\n\n# Created By: `{login}`"
+
         # ensure < 2000 characters
-        if (len(body) > 2000):
+        if len(body) > 2000:
             body = body[:2000]
 
         forum : discord.ForumChannel = await get_forum()
@@ -159,18 +155,20 @@ async def track_all_issues():
 #                 await message.channel.edit(locked=True, archived=True)
 
 async def get_forum_id() -> int:
-    '''
+    """
         Returns the id of the forum this bot operates in
         Throws an exception if the forum/guild is not found
-    '''
+    """
 
     # Attempt to find the forum
     global FORUM_ID
     guild = bot.get_guild(int(GUILD_ID))
-    if (guild == None):
+
+    if guild is None:
         raise Exception("Guild not found")
+
     for channel in guild.forum_channels:
-        if (channel.name == "github-issues"):
+        if channel.name == "github-issues":
             FORUM_ID = channel.id
             return FORUM_ID
     
@@ -180,32 +178,33 @@ async def get_forum_id() -> int:
     return FORUM_ID
 
 async def get_forum() -> discord.ForumChannel:
-    '''
+    """
         Returns the forum this bot operates in
         Throws an exception if the forum/guild is not found
-    '''
+    """
 
     global FORUM_ID
-    if (FORUM_ID == -1):
+    if FORUM_ID == -1:
         await get_forum_id()
-    return bot.get_channel(FORUM_ID)
+
+    channel = bot.get_channel(FORUM_ID)
+
+    if channel is None or channel is not discord.ForumChannel:
+        raise Exception("FORUM_ID should point to a forum channel!")
+
+    return channel
 
 async def create_issue(title: str, body: str, label: list[str] = [], blame: str = None) -> tuple[dict, discord.Thread]:
-    '''
+    """
         Create an issue in the GitHub repository and the Discord forum
-    '''
-
-    # Get the forum id
-    if (FORUM_ID == -1):
-        await get_forum_id()
-
+    """
     body += f"\n\n# Created By: `{blame}`" if blame else ""
 
     # Create the issue
     created = issues.create_issue(issues.OWNER, issues.REPO, title, body, labels=label)
 
     # Create the forum message
-    forum = bot.get_channel(FORUM_ID)
+    forum = await get_forum()
     thread = await forum.create_thread(name=title, content=f"{body}\n\n[Created Issue]({issues.get_issue_url(created)})", applied_tags=get_tags(forum, label))
     
     # start tracking
@@ -214,33 +213,29 @@ async def create_issue(title: str, body: str, label: list[str] = [], blame: str 
     return created, thread
 
 def get_tags(forum: discord.ForumChannel, tags: list[str]) -> list[discord.ForumTag]:
-    '''
+    """
         Get a tag from a forum channel
-    '''
-
-    found = []
-    for t in forum.available_tags:
-        if (t.name in tags):
-            found.append(t)
-    return found
+    """
+    return [t for t in forum.available_tags if t.name in tags]
 
 @issues_group.command(guild_ids=[GUILD_ID])
 async def create(ctx : discord.context.ApplicationContext):
-    '''
+    """
         Create a new issue
-    '''
+    """
     modal = IssueModal(title="Create an Issue", ctx=ctx)
     await ctx.send_modal(modal)
 
 @issues_group.command(guild_ids=[GUILD_ID])
 async def comment(ctx: discord.context.ApplicationContext, message: str, issue_number: int = None):
-    '''
+    """
         Comment on an issue
-    '''
-    if (issue_number == None):
+    """
+    if issue_number is None:
         # Get the issue number from the thread
         issue = tracking.get_issue(ctx.channel.id)
-        if (issue):
+
+        if issue:
             issue_number = issue.get("issue_number")
         else:
             await ctx.respond("This is not a tracked issue.", ephemeral=True)
@@ -286,4 +281,4 @@ async def comment(ctx: discord.context.ApplicationContext, message: str, issue_n
 #     print("Untracked & Closed issue", issue_number)
 #     await ctx.send_followup("Issue closed!")
 
-bot.run(os.getenv('DISCORD_TOKEN')) # run the bot with the token
+bot.run(os.getenv("DISCORD_TOKEN")) # run the bot with the token
